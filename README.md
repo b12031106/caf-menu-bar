@@ -11,14 +11,27 @@ A small macOS menu bar app that toggles `caffeinate -dims`.
 - Provides a menu item and `Control + Option + Command + C` hotkey for toggling.
 - Sends a macOS notification when the state changes.
 
-## Download (recommended)
+## Install via Homebrew (recommended)
+
+```sh
+brew install --cask b12031106/tap/caf
+```
+
+The cask strips the quarantine attribute on install, so the app launches
+without a Gatekeeper prompt. Update with:
+
+```sh
+brew upgrade --cask caf
+```
+
+## Download manually
 
 Grab the latest `caf-*.dmg` from the
 [Releases page](https://github.com/b12031106/caf-menu-bar/releases/latest),
 open it, and drag **caf.app** into **Applications**.
 
-Because the app is not signed/notarized by Apple, the first launch needs a
-one-time Gatekeeper bypass:
+Because the app is not signed/notarized by Apple, a manual download needs a
+one-time Gatekeeper bypass on first launch:
 
 - **Right-click caf.app → Open**, then click **Open** again in the dialog, or
 - run once in Terminal:

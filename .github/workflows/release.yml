@@ -14,6 +14,8 @@ permissions:
 jobs:
   build:
     runs-on: macos-latest
+    env:
+      TAP_TOKEN: ${{ secrets.HOMEBREW_TAP_TOKEN }}
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -84,3 +86,47 @@ jobs:
             "${DMG}" \
             --title "${GITHUB_REF_NAME}" \
             --notes-file notes.md
+
+      - name: Update Homebrew cask
+        if: github.ref_type == 'tag' && env.TAP_TOKEN != ''
+        run: |
+          VERSION="${{ steps.ver.outputs.version }}"
+          DMG="${{ steps.dmg.outputs.dmg }}"
+          SHA="$(shasum -a 256 "$DMG" | awk '{print $1}')"
+
+          git clone "https://x-access-token:${TAP_TOKEN}@github.com/b12031106/homebrew-tap.git" tap
+          mkdir -p tap/Casks
+          cat > tap/Casks/caf.rb <<EOF
+          cask "caf" do
+            version "${VERSION}"
+            sha256 "${SHA}"
+
+            url "https://github.com/b12031106/caf-menu-bar/releases/download/v#{version}/caf-#{version}.dmg"
+            name "caf"
+            desc "Menu bar app that toggles caffeinate -dims"
+            homepage "https://github.com/b12031106/caf-menu-bar"
+
+            app "caf.app"
+
+            # 未簽章 App：安裝後自動移除 quarantine，使用者免手動繞過 Gatekeeper
+            postflight do
+              system_command "/usr/bin/xattr",
+                             args: ["-dr", "com.apple.quarantine", "#{appdir}/caf.app"]
+            end
+
+            zap trash: [
+              "~/Library/Saved Application State/local.caf.menubar.savedState",
+            ]
+          end
+          EOF
+
+          cd tap
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add Casks/caf.rb
+          if git diff --staged --quiet; then
+            echo "Cask unchanged, nothing to commit"
+          else
+            git commit -m "caf ${VERSION}"
+            git push
+          fi
