@@ -1,0 +1,86 @@
+name: Release
+
+# 打 tag 就觸發：git tag v2.1 && git push origin v2.1
+on:
+  push:
+    tags:
+      - "v*"
+  # 也允許在 Actions 頁面手動觸發測試（不會建立 Release，只產生 artifact）
+  workflow_dispatch:
+
+permissions:
+  contents: write # 建立 Release、上傳 dmg 需要
+
+jobs:
+  build:
+    runs-on: macos-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Resolve version
+        id: ver
+        run: |
+          if [ "${GITHUB_REF_TYPE}" = "tag" ]; then
+            VERSION="${GITHUB_REF_NAME#v}"   # v2.1 -> 2.1
+          else
+            VERSION="0.0.0-dev"
+          fi
+          echo "version=${VERSION}" >> "$GITHUB_OUTPUT"
+          echo "Building version ${VERSION}"
+
+      - name: Stamp version into Info.plist
+        run: |
+          /usr/libexec/PlistBuddy -c "Set :CFBundleShortVersionString ${{ steps.ver.outputs.version }}" Info.plist
+          /usr/libexec/PlistBuddy -c "Set :CFBundleVersion ${{ github.run_number }}" Info.plist
+
+      - name: Build app
+        run: ./build.sh
+
+      - name: Package DMG
+        id: dmg
+        run: |
+          VERSION="${{ steps.ver.outputs.version }}"
+          DMG="caf-${VERSION}.dmg"
+          STAGING="$(mktemp -d)"
+          cp -R build/caf.app "$STAGING/caf.app"
+          ln -s /Applications "$STAGING/Applications"
+          hdiutil create \
+            -volname "caf" \
+            -srcfolder "$STAGING" \
+            -ov -format UDZO \
+            "$DMG"
+          echo "dmg=${DMG}" >> "$GITHUB_OUTPUT"
+          shasum -a 256 "$DMG"
+
+      - name: Upload build artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: caf-dmg
+          path: ${{ steps.dmg.outputs.dmg }}
+
+      - name: Create GitHub Release
+        if: github.ref_type == 'tag'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          DMG="${{ steps.dmg.outputs.dmg }}"
+          SHA="$(shasum -a 256 "$DMG" | awk '{print $1}')"
+          cat > notes.md <<EOF
+          ## 下載與安裝
+
+          1. 下載下方的 \`${DMG}\`，打開後把 **caf.app** 拖到 **Applications**。
+          2. 因為這個 App 未經 Apple 簽章/公證，第一次開啟需繞過 Gatekeeper，二選一：
+             - **右鍵點 caf.app → 開啟**，在彈出視窗再按一次「開啟」。
+             - 或在終端機執行一次：
+               \`\`\`sh
+               xattr -dr com.apple.quarantine /Applications/caf.app
+               \`\`\`
+          3. 之後正常雙擊即可使用。
+
+          SHA-256: \`${SHA}\`
+          EOF
+          gh release create "${GITHUB_REF_NAME}" \
+            "${DMG}" \
+            --title "${GITHUB_REF_NAME}" \
+            --notes-file notes.md
