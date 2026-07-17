@@ -1,6 +1,6 @@
 # caf menu bar
 
-A small macOS menu bar app that toggles `caffeinate -dims`.
+A small macOS menu bar app that prevents sleep with `caffeinate`.
 
 ## Features
 
@@ -9,6 +9,8 @@ A small macOS menu bar app that toggles `caffeinate -dims`.
 - Launch again to toggle it off.
 - Shows ON/OFF state in the menu bar.
 - Provides a menu item and `Control + Option + Command + C` hotkey for toggling.
+- Choose whether to keep the display awake (`-dims`, default) or allow display
+  sleep while preventing system sleep (`-ims`). The choice is remembered.
 - Sends a macOS notification when the state changes.
 
 ## Install via Homebrew (recommended)

@@ -2,9 +2,24 @@ import AppKit
 import Carbon
 
 private final class CafApp: NSObject, NSApplicationDelegate, NSUserNotificationCenterDelegate {
+    private enum CaffeinateMode: String {
+        case keepDisplayAwake
+        case allowDisplaySleep
+
+        var arguments: [String] {
+            switch self {
+            case .keepDisplayAwake:
+                ["-dims"]
+            case .allowDisplaySleep:
+                ["-ims"]
+            }
+        }
+    }
+
     private let bundleIdentifier = "local.caf.menubar"
     private let toggleNotification = Notification.Name("local.caf.menubar.toggle")
     private let pidFile = URL(fileURLWithPath: "/tmp/local.caf.menubar.caffeinate.pid")
+    private let caffeinateModeDefaultsKey = "local.caf.menubar.caffeinateMode"
     private let statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
     private var caffeinateProcess: Process?
     private var hotKeyRef: EventHotKeyRef?
@@ -85,6 +100,23 @@ private final class CafApp: NSObject, NSApplicationDelegate, NSUserNotificationC
             keyEquivalent: ""
         ))
 
+        menu.addItem(.separator())
+        let keepDisplayAwakeItem = NSMenuItem(
+            title: "保持螢幕喚醒（-dims）",
+            action: #selector(selectKeepDisplayAwake),
+            keyEquivalent: ""
+        )
+        keepDisplayAwakeItem.state = caffeinateMode == .keepDisplayAwake ? .on : .off
+        menu.addItem(keepDisplayAwakeItem)
+
+        let allowDisplaySleepItem = NSMenuItem(
+            title: "允許螢幕休眠（僅防止系統休眠，-ims）",
+            action: #selector(selectAllowDisplaySleep),
+            keyEquivalent: ""
+        )
+        allowDisplaySleepItem.state = caffeinateMode == .allowDisplaySleep ? .on : .off
+        menu.addItem(allowDisplaySleepItem)
+
         let hotKeyItem = NSMenuItem(title: "熱鍵：⌃⌥⌘C", action: nil, keyEquivalent: "")
         hotKeyItem.isEnabled = false
         menu.addItem(hotKeyItem)
@@ -103,6 +135,14 @@ private final class CafApp: NSObject, NSApplicationDelegate, NSUserNotificationC
         toggleCaffeinate(showToast: true)
     }
 
+    @objc private func selectKeepDisplayAwake() {
+        setCaffeinateMode(.keepDisplayAwake)
+    }
+
+    @objc private func selectAllowDisplaySleep() {
+        setCaffeinateMode(.allowDisplaySleep)
+    }
+
     @objc private func quit() {
         NSApp.terminate(nil)
     }
@@ -110,6 +150,18 @@ private final class CafApp: NSObject, NSApplicationDelegate, NSUserNotificationC
     private var isCaffeinateRunning: Bool {
         guard let process = caffeinateProcess else { return false }
         return process.isRunning
+    }
+
+    private var caffeinateMode: CaffeinateMode {
+        get {
+            guard let rawValue = UserDefaults.standard.string(forKey: caffeinateModeDefaultsKey) else {
+                return .keepDisplayAwake
+            }
+            return CaffeinateMode(rawValue: rawValue) ?? .keepDisplayAwake
+        }
+        set {
+            UserDefaults.standard.set(newValue.rawValue, forKey: caffeinateModeDefaultsKey)
+        }
     }
 
     private func toggleCaffeinate(showToast: Bool) {
@@ -120,14 +172,24 @@ private final class CafApp: NSObject, NSApplicationDelegate, NSUserNotificationC
         }
     }
 
+    private func setCaffeinateMode(_ mode: CaffeinateMode) {
+        guard caffeinateMode != mode else { return }
+        caffeinateMode = mode
+
+        guard isCaffeinateRunning else { return }
+        stopCaffeinate(showToast: false)
+        startCaffeinate(showToast: true)
+    }
+
     private func startCaffeinate(showToast: Bool) {
         cleanStaleCaffeinate()
 
         let process = Process()
         process.executableURL = URL(fileURLWithPath: "/usr/bin/caffeinate")
-        process.arguments = ["-dims"]
-        process.terminationHandler = { [weak self] _ in
+        process.arguments = caffeinateMode.arguments
+        process.terminationHandler = { [weak self, weak process] _ in
             DispatchQueue.main.async {
+                guard self?.caffeinateProcess === process else { return }
                 self?.caffeinateProcess = nil
                 self?.removePidFile()
                 self?.updateStatusItem()
