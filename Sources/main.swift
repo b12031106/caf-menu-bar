@@ -1,5 +1,6 @@
 import AppKit
 import Carbon
+import ServiceManagement
 
 private final class CafApp: NSObject, NSApplicationDelegate, NSUserNotificationCenterDelegate {
     private enum CaffeinateMode: String {
@@ -20,6 +21,7 @@ private final class CafApp: NSObject, NSApplicationDelegate, NSUserNotificationC
     private let toggleNotification = Notification.Name("local.caf.menubar.toggle")
     private let pidFile = URL(fileURLWithPath: "/tmp/local.caf.menubar.caffeinate.pid")
     private let caffeinateModeDefaultsKey = "local.caf.menubar.caffeinateMode"
+    private let launchAtLoginConfiguredDefaultsKey = "local.caf.menubar.launchAtLoginConfigured"
     private let statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
     private var caffeinateProcess: Process?
     private var hotKeyRef: EventHotKeyRef?
@@ -44,6 +46,7 @@ private final class CafApp: NSObject, NSApplicationDelegate, NSUserNotificationC
 
         cleanStaleCaffeinate()
         NSUserNotificationCenter.default.delegate = self
+        configureDefaultLaunchAtLogin()
         configureStatusItem()
         registerHotKey()
         toggleCaffeinate(showToast: true)
@@ -122,6 +125,24 @@ private final class CafApp: NSObject, NSApplicationDelegate, NSUserNotificationC
         menu.addItem(hotKeyItem)
 
         menu.addItem(.separator())
+        let launchAtLoginItem = NSMenuItem(
+            title: launchAtLoginMenuTitle,
+            action: #selector(toggleLaunchAtLogin),
+            keyEquivalent: ""
+        )
+        switch SMAppService.mainApp.status {
+        case .enabled:
+            launchAtLoginItem.state = .on
+        case .requiresApproval:
+            launchAtLoginItem.state = .mixed
+        case .notRegistered, .notFound:
+            launchAtLoginItem.state = .off
+        @unknown default:
+            launchAtLoginItem.state = .off
+        }
+        menu.addItem(launchAtLoginItem)
+
+        menu.addItem(.separator())
         menu.addItem(NSMenuItem(title: "結束", action: #selector(quit), keyEquivalent: "q"))
 
         NSMenu.popUpContextMenu(menu, with: NSApp.currentEvent!, for: statusItem.button!)
@@ -143,6 +164,24 @@ private final class CafApp: NSObject, NSApplicationDelegate, NSUserNotificationC
         setCaffeinateMode(.allowDisplaySleep)
     }
 
+    @objc private func toggleLaunchAtLogin() {
+        let service = SMAppService.mainApp
+
+        do {
+            switch service.status {
+            case .enabled, .requiresApproval:
+                try service.unregister()
+            case .notRegistered, .notFound:
+                try service.register()
+            @unknown default:
+                try service.register()
+            }
+            UserDefaults.standard.set(true, forKey: launchAtLoginConfiguredDefaultsKey)
+        } catch {
+            showToast("無法更新登入時啟動設定")
+        }
+    }
+
     @objc private func quit() {
         NSApp.terminate(nil)
     }
@@ -161,6 +200,34 @@ private final class CafApp: NSObject, NSApplicationDelegate, NSUserNotificationC
         }
         set {
             UserDefaults.standard.set(newValue.rawValue, forKey: caffeinateModeDefaultsKey)
+        }
+    }
+
+    private var launchAtLoginMenuTitle: String {
+        switch SMAppService.mainApp.status {
+        case .requiresApproval:
+            return "登入時啟動（需在系統設定允許）"
+        case .notFound:
+            return "登入時啟動（目前無法使用）"
+        case .enabled, .notRegistered:
+            return "登入時啟動"
+        @unknown default:
+            return "登入時啟動"
+        }
+    }
+
+    private func configureDefaultLaunchAtLogin() {
+        let defaults = UserDefaults.standard
+        guard defaults.object(forKey: launchAtLoginConfiguredDefaultsKey) == nil else { return }
+
+        let service = SMAppService.mainApp
+        do {
+            if service.status == .notRegistered || service.status == .notFound {
+                try service.register()
+            }
+            defaults.set(true, forKey: launchAtLoginConfiguredDefaultsKey)
+        } catch {
+            NSLog("caf: failed to enable launch at login: %@", error.localizedDescription)
         }
     }
 

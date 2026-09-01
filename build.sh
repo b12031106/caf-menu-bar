@@ -12,6 +12,7 @@ swiftc "$ROOT/Sources/main.swift" \
   -O \
   -framework AppKit \
   -framework Carbon \
+  -framework ServiceManagement \
   -o "$APP/Contents/MacOS/caf"
 
 codesign --force --sign - "$APP"

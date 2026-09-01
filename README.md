@@ -5,6 +5,7 @@ A small macOS menu bar app that prevents sleep with `caffeinate`.
 ## Features
 
 - Runs as a menu bar app without opening Terminal.
+- Starts automatically at login by default, with a menu option to turn it off.
 - Launch once to enable `caffeinate -dims`.
 - Launch again to toggle it off.
 - Shows ON/OFF state in the menu bar.
