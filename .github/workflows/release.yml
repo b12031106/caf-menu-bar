@@ -103,7 +103,7 @@ jobs:
 
             url "https://github.com/b12031106/caf-menu-bar/releases/download/v#{version}/caf-#{version}.dmg"
             name "caf"
-            desc "Menu bar app that toggles caffeinate -dims"
+            desc "Menu bar app that prevents sleep with caffeinate or pmset"
             homepage "https://github.com/b12031106/caf-menu-bar"
 
             app "caf.app"

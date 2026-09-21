@@ -1,6 +1,7 @@
 # caf menu bar
 
-A small macOS menu bar app that prevents sleep with `caffeinate`.
+A small macOS menu bar app that prevents sleep with `caffeinate` or a stronger
+system-wide `pmset` mode.
 
 ## Features
 
@@ -12,7 +13,17 @@ A small macOS menu bar app that prevents sleep with `caffeinate`.
 - Provides a menu item and `Control + Option + Command + C` hotkey for toggling.
 - Choose whether to keep the display awake (`-dims`, default) or allow display
   sleep while preventing system sleep (`-ims`). The choice is remembered.
+- Choose the stronger system-wide mode to run
+  `pmset -a disablesleep 1 powernap 0`. macOS asks for administrator
+  authorization when this mode is enabled or disabled.
+- Restores the previous Power Nap setting for each power source when the
+  stronger mode is turned off, switched back to `caffeinate`, or the app exits
+  normally.
 - Sends a macOS notification when the state changes.
+
+The system-wide mode changes persistent macOS power settings. If the app is
+force-quit or crashes while that mode is active, launch it again and turn sleep
+prevention off to restore the saved settings.
 
 ## Install via Homebrew (recommended)
 

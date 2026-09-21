@@ -3,6 +3,18 @@ import Carbon
 import ServiceManagement
 
 private final class CafApp: NSObject, NSApplicationDelegate, NSUserNotificationCenterDelegate {
+    private enum PreventionMethod: String {
+        case caffeinate
+        case disableSleep
+
+        var displayName: String {
+            switch self {
+            case .caffeinate: "Caffeinate"
+            case .disableSleep: "強制禁止系統休眠"
+            }
+        }
+    }
+
     private enum CaffeinateMode: String {
         case keepDisplayAwake
         case allowDisplaySleep
@@ -17,10 +29,24 @@ private final class CafApp: NSObject, NSApplicationDelegate, NSUserNotificationC
         }
     }
 
+    private struct PowerSourceSettings: Codable {
+        var powernap: Int?
+        var disablesleep: Int?
+    }
+
+    private struct PmsetSnapshot: Codable {
+        var battery: PowerSourceSettings?
+        var charger: PowerSourceSettings?
+        var ups: PowerSourceSettings?
+    }
+
     private let bundleIdentifier = "local.caf.menubar"
     private let toggleNotification = Notification.Name("local.caf.menubar.toggle")
     private let pidFile = URL(fileURLWithPath: "/tmp/local.caf.menubar.caffeinate.pid")
+    private let preventionMethodDefaultsKey = "local.caf.menubar.preventionMethod"
     private let caffeinateModeDefaultsKey = "local.caf.menubar.caffeinateMode"
+    private let pmsetActiveDefaultsKey = "local.caf.menubar.pmsetActive"
+    private let pmsetSnapshotDefaultsKey = "local.caf.menubar.pmsetSnapshot"
     private let launchAtLoginConfiguredDefaultsKey = "local.caf.menubar.launchAtLoginConfigured"
     private let statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
     private var caffeinateProcess: Process?
@@ -49,18 +75,18 @@ private final class CafApp: NSObject, NSApplicationDelegate, NSUserNotificationC
         configureDefaultLaunchAtLogin()
         configureStatusItem()
         registerHotKey()
-        toggleCaffeinate(showToast: true)
+        togglePrevention(showToast: true)
     }
 
     func applicationShouldHandleReopen(_ sender: NSApplication, hasVisibleWindows flag: Bool) -> Bool {
-        toggleCaffeinate(showToast: true)
+        togglePrevention(showToast: true)
         return false
     }
 
     func applicationWillTerminate(_ notification: Notification) {
         NSUserNotificationCenter.default.delegate = nil
         DistributedNotificationCenter.default().removeObserver(self)
-        stopCaffeinate(showToast: false)
+        stopPrevention(showToast: false)
         unregisterHotKey()
     }
 
@@ -91,17 +117,34 @@ private final class CafApp: NSObject, NSApplicationDelegate, NSUserNotificationC
     @objc private func statusItemClicked() {
         let menu = NSMenu()
 
-        let state = isCaffeinateRunning ? "狀態：啟用中" : "狀態：已關閉"
+        let state = isPreventionActive ? "狀態：啟用中（\(preventionMethod.displayName)）" : "狀態：已關閉"
         let stateItem = NSMenuItem(title: state, action: nil, keyEquivalent: "")
         stateItem.isEnabled = false
         menu.addItem(stateItem)
 
         menu.addItem(.separator())
         menu.addItem(NSMenuItem(
-            title: isCaffeinateRunning ? "關閉 Caffeinate" : "啟用 Caffeinate",
+            title: isPreventionActive ? "關閉防止休眠" : "啟用防止休眠",
             action: #selector(toggleFromMenu),
             keyEquivalent: ""
         ))
+
+        menu.addItem(.separator())
+        let caffeinateMethodItem = NSMenuItem(
+            title: "使用 Caffeinate",
+            action: #selector(selectCaffeinateMethod),
+            keyEquivalent: ""
+        )
+        caffeinateMethodItem.state = preventionMethod == .caffeinate ? .on : .off
+        menu.addItem(caffeinateMethodItem)
+
+        let disableSleepMethodItem = NSMenuItem(
+            title: "強制禁止系統休眠（需要管理員權限）",
+            action: #selector(selectDisableSleepMethod),
+            keyEquivalent: ""
+        )
+        disableSleepMethodItem.state = preventionMethod == .disableSleep ? .on : .off
+        menu.addItem(disableSleepMethodItem)
 
         menu.addItem(.separator())
         let keepDisplayAwakeItem = NSMenuItem(
@@ -110,6 +153,7 @@ private final class CafApp: NSObject, NSApplicationDelegate, NSUserNotificationC
             keyEquivalent: ""
         )
         keepDisplayAwakeItem.state = caffeinateMode == .keepDisplayAwake ? .on : .off
+        keepDisplayAwakeItem.isEnabled = preventionMethod == .caffeinate
         menu.addItem(keepDisplayAwakeItem)
 
         let allowDisplaySleepItem = NSMenuItem(
@@ -118,6 +162,7 @@ private final class CafApp: NSObject, NSApplicationDelegate, NSUserNotificationC
             keyEquivalent: ""
         )
         allowDisplaySleepItem.state = caffeinateMode == .allowDisplaySleep ? .on : .off
+        allowDisplaySleepItem.isEnabled = preventionMethod == .caffeinate
         menu.addItem(allowDisplaySleepItem)
 
         let hotKeyItem = NSMenuItem(title: "熱鍵：⌃⌥⌘C", action: nil, keyEquivalent: "")
@@ -149,11 +194,19 @@ private final class CafApp: NSObject, NSApplicationDelegate, NSUserNotificationC
     }
 
     @objc private func toggleFromMenu() {
-        toggleCaffeinate(showToast: true)
+        togglePrevention(showToast: true)
     }
 
     @objc private func toggleFromExternalLaunch() {
-        toggleCaffeinate(showToast: true)
+        togglePrevention(showToast: true)
+    }
+
+    @objc private func selectCaffeinateMethod() {
+        setPreventionMethod(.caffeinate)
+    }
+
+    @objc private func selectDisableSleepMethod() {
+        setPreventionMethod(.disableSleep)
     }
 
     @objc private func selectKeepDisplayAwake() {
@@ -189,6 +242,27 @@ private final class CafApp: NSObject, NSApplicationDelegate, NSUserNotificationC
     private var isCaffeinateRunning: Bool {
         guard let process = caffeinateProcess else { return false }
         return process.isRunning
+    }
+
+    private var isPreventionActive: Bool {
+        isCaffeinateRunning || pmsetIsActive
+    }
+
+    private var preventionMethod: PreventionMethod {
+        get {
+            guard let rawValue = UserDefaults.standard.string(forKey: preventionMethodDefaultsKey) else {
+                return .caffeinate
+            }
+            return PreventionMethod(rawValue: rawValue) ?? .caffeinate
+        }
+        set {
+            UserDefaults.standard.set(newValue.rawValue, forKey: preventionMethodDefaultsKey)
+        }
+    }
+
+    private var pmsetIsActive: Bool {
+        get { UserDefaults.standard.bool(forKey: pmsetActiveDefaultsKey) }
+        set { UserDefaults.standard.set(newValue, forKey: pmsetActiveDefaultsKey) }
     }
 
     private var caffeinateMode: CaffeinateMode {
@@ -231,12 +305,49 @@ private final class CafApp: NSObject, NSApplicationDelegate, NSUserNotificationC
         }
     }
 
-    private func toggleCaffeinate(showToast: Bool) {
+    private func togglePrevention(showToast: Bool) {
+        if isPreventionActive {
+            stopPrevention(showToast: showToast)
+        } else {
+            startPrevention(showToast: showToast)
+        }
+    }
+
+    private func startPrevention(showToast: Bool) {
+        switch preventionMethod {
+        case .caffeinate:
+            startCaffeinate(showToast: showToast)
+        case .disableSleep:
+            startDisableSleep(showToast: showToast)
+        }
+    }
+
+    private func stopPrevention(showToast: Bool) {
         if isCaffeinateRunning {
             stopCaffeinate(showToast: showToast)
-        } else {
-            startCaffeinate(showToast: showToast)
+        } else if pmsetIsActive {
+            stopDisableSleep(showToast: showToast)
         }
+    }
+
+    private func setPreventionMethod(_ method: PreventionMethod) {
+        guard preventionMethod != method else { return }
+
+        let wasActive = isPreventionActive
+        if wasActive {
+            switch preventionMethod {
+            case .caffeinate:
+                guard startDisableSleep(showToast: false) else { return }
+                stopCaffeinate(showToast: false)
+            case .disableSleep:
+                guard stopDisableSleep(showToast: false) else { return }
+                startCaffeinate(showToast: false)
+            }
+        }
+
+        preventionMethod = method
+        updateStatusItem()
+        showToast(wasActive ? "已切換為\(method.displayName)" : "已選擇\(method.displayName)")
     }
 
     private func setCaffeinateMode(_ mode: CaffeinateMode) {
@@ -246,6 +357,168 @@ private final class CafApp: NSObject, NSApplicationDelegate, NSUserNotificationC
         guard isCaffeinateRunning else { return }
         stopCaffeinate(showToast: false)
         startCaffeinate(showToast: true)
+    }
+
+    @discardableResult
+    private func startDisableSleep(showToast: Bool) -> Bool {
+        guard !pmsetIsActive else { return true }
+        guard let snapshot = readPmsetSnapshot() else {
+            if showToast { self.showToast("無法讀取目前的電源設定") }
+            return false
+        }
+
+        do {
+            let data = try JSONEncoder().encode(snapshot)
+            UserDefaults.standard.set(data, forKey: pmsetSnapshotDefaultsKey)
+            pmsetIsActive = true
+            _ = UserDefaults.standard.synchronize()
+        } catch {
+            if showToast { self.showToast("無法保存目前的電源設定") }
+            return false
+        }
+
+        guard runPrivilegedCommand("/usr/bin/pmset -a disablesleep 1 powernap 0") else {
+            pmsetIsActive = false
+            UserDefaults.standard.removeObject(forKey: pmsetSnapshotDefaultsKey)
+            _ = UserDefaults.standard.synchronize()
+            updateStatusItem()
+            if showToast { self.showToast("未啟用強制防休眠") }
+            return false
+        }
+
+        updateStatusItem()
+        if showToast { self.showToast("強制防休眠啟用中") }
+        return true
+    }
+
+    @discardableResult
+    private func stopDisableSleep(showToast: Bool) -> Bool {
+        guard pmsetIsActive else { return true }
+        guard let snapshot = savedPmsetSnapshot else {
+            if showToast { self.showToast("找不到原始電源設定，尚未進行還原") }
+            return false
+        }
+
+        let commands = restoreCommands(from: snapshot)
+        guard !commands.isEmpty, runPrivilegedCommand(commands.joined(separator: " && ")) else {
+            updateStatusItem()
+            if showToast { self.showToast("電源設定尚未還原") }
+            return false
+        }
+
+        pmsetIsActive = false
+        UserDefaults.standard.removeObject(forKey: pmsetSnapshotDefaultsKey)
+        _ = UserDefaults.standard.synchronize()
+        updateStatusItem()
+        if showToast { self.showToast("強制防休眠已關閉，電源設定已還原") }
+        return true
+    }
+
+    private var savedPmsetSnapshot: PmsetSnapshot? {
+        guard let data = UserDefaults.standard.data(forKey: pmsetSnapshotDefaultsKey) else {
+            return nil
+        }
+        return try? JSONDecoder().decode(PmsetSnapshot.self, from: data)
+    }
+
+    private func readPmsetSnapshot() -> PmsetSnapshot? {
+        let process = Process()
+        let output = Pipe()
+        process.executableURL = URL(fileURLWithPath: "/usr/bin/pmset")
+        process.arguments = ["-g", "custom"]
+        process.standardOutput = output
+        process.standardError = Pipe()
+
+        do {
+            try process.run()
+            process.waitUntilExit()
+        } catch {
+            return nil
+        }
+
+        guard process.terminationStatus == 0 else { return nil }
+        let data = output.fileHandleForReading.readDataToEndOfFile()
+        guard let text = String(data: data, encoding: .utf8) else { return nil }
+
+        enum Source { case battery, charger, ups }
+        var currentSource: Source?
+        var snapshot = PmsetSnapshot()
+
+        for rawLine in text.split(separator: "\n", omittingEmptySubsequences: false) {
+            let line = rawLine.trimmingCharacters(in: .whitespaces)
+            switch line {
+            case "Battery Power:":
+                currentSource = .battery
+                snapshot.battery = PowerSourceSettings()
+                continue
+            case "AC Power:":
+                currentSource = .charger
+                snapshot.charger = PowerSourceSettings()
+                continue
+            case "UPS Power:":
+                currentSource = .ups
+                snapshot.ups = PowerSourceSettings()
+                continue
+            default:
+                break
+            }
+
+            let fields = line.split(whereSeparator: { $0.isWhitespace })
+            guard fields.count == 2, let value = Int(fields[1]), let currentSource else { continue }
+            let key = String(fields[0])
+
+            func applying(_ settings: inout PowerSourceSettings) {
+                if key == "powernap" { settings.powernap = value }
+                if key == "disablesleep" { settings.disablesleep = value }
+            }
+
+            switch currentSource {
+            case .battery: applying(&snapshot.battery!)
+            case .charger: applying(&snapshot.charger!)
+            case .ups: applying(&snapshot.ups!)
+            }
+        }
+
+        guard snapshot.battery != nil || snapshot.charger != nil || snapshot.ups != nil else {
+            return nil
+        }
+        return snapshot
+    }
+
+    private func restoreCommands(from snapshot: PmsetSnapshot) -> [String] {
+        func command(flag: String, settings: PowerSourceSettings?) -> String? {
+            guard let settings else { return nil }
+            var arguments = ["/usr/bin/pmset", flag, "disablesleep", String(settings.disablesleep ?? 0)]
+            if let powernap = settings.powernap {
+                arguments += ["powernap", String(powernap)]
+            }
+            return arguments.joined(separator: " ")
+        }
+
+        return [
+            command(flag: "-b", settings: snapshot.battery),
+            command(flag: "-c", settings: snapshot.charger),
+            command(flag: "-u", settings: snapshot.ups),
+        ].compactMap { $0 }
+    }
+
+    private func runPrivilegedCommand(_ command: String) -> Bool {
+        let escaped = command
+            .replacingOccurrences(of: "\\", with: "\\\\")
+            .replacingOccurrences(of: "\"", with: "\\\"")
+        guard let script = NSAppleScript(
+            source: "do shell script \"\(escaped)\" with administrator privileges"
+        ) else {
+            return false
+        }
+
+        var error: NSDictionary?
+        script.executeAndReturnError(&error)
+        if let error {
+            NSLog("caf: privileged pmset command failed: %@", error)
+            return false
+        }
+        return true
     }
 
     private func startCaffeinate(showToast: Bool) {
@@ -321,11 +594,11 @@ private final class CafApp: NSObject, NSApplicationDelegate, NSUserNotificationC
 
     private func updateStatusItem() {
         guard let button = statusItem.button else { return }
-        if isCaffeinateRunning {
-            button.image = NSImage(systemSymbolName: "cup.and.saucer.fill", accessibilityDescription: "Caffeinate enabled")
+        if isPreventionActive {
+            button.image = NSImage(systemSymbolName: "cup.and.saucer.fill", accessibilityDescription: "Sleep prevention enabled")
             button.title = " ON"
         } else {
-            button.image = NSImage(systemSymbolName: "cup.and.saucer", accessibilityDescription: "Caffeinate disabled")
+            button.image = NSImage(systemSymbolName: "cup.and.saucer", accessibilityDescription: "Sleep prevention disabled")
             button.title = " OFF"
         }
     }
@@ -363,7 +636,7 @@ private final class CafApp: NSObject, NSApplicationDelegate, NSUserNotificationC
 
             let app = Unmanaged<CafApp>.fromOpaque(userData).takeUnretainedValue()
             DispatchQueue.main.async {
-                app.toggleCaffeinate(showToast: true)
+                app.togglePrevention(showToast: true)
             }
             return noErr
         }
